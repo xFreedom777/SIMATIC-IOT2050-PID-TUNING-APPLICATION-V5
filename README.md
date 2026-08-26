@@ -1,4 +1,4 @@
-# SIMATIC IOT2050 PID Tuning Application — V4
+# SIMATIC IOT2050 PID Tuning Application — V5
 
 > **[ภาษาไทย 🇹🇭 อยู่ด้านล่าง / Thai version below ⬇️]**
 
@@ -281,7 +281,7 @@ sudo reboot
 ---
 ---
 
-# SIMATIC IOT2050 PID Tuning Application — V4 (ภาษาไทย)
+# SIMATIC IOT2050 PID Tuning Application — V5 (ภาษาไทย)
 
 > **[English version above ⬆️]**
 

@@ -708,10 +708,41 @@ async function writeSetpoint() {
 }
 
 function onManualSlider(val) {
-  document.getElementById('manualSliderVal').textContent = parseFloat(val).toFixed(1);
+  const num = parseFloat(val) || 0;
+  const valEl = document.getElementById('manualSliderVal');
+  if (valEl) valEl.textContent = num.toFixed(1) + '%';
+  const inp = document.getElementById('manualInput');
+  if (inp && document.activeElement !== inp) inp.value = num.toFixed(1);
   if (!State.selectedBlockId) return;
-  api('POST', `/api/blocks/${State.selectedBlockId}/manual`, { value: parseFloat(val) })
+  api('POST', `/api/blocks/${State.selectedBlockId}/manual`, { value: num })
     .catch(console.error);
+}
+
+async function writeManualOutput() {
+  if (!State.selectedBlockId) return toast('Select a PID loop first', 'warning');
+
+  const inp = document.getElementById('manualInput');
+  if (!inp || inp.value === '') return;
+
+  let val = parseFloat(inp.value);
+  if (isNaN(val)) return toast('Please enter a valid number (0-100)', 'error');
+
+  // Clamp 0.0 to 100.0%
+  if (val < 0) val = 0;
+  if (val > 100) val = 100;
+  inp.value = val.toFixed(1);
+
+  const slider = document.getElementById('manualSlider');
+  if (slider) slider.value = val;
+  const sliderVal = document.getElementById('manualSliderVal');
+  if (sliderVal) sliderVal.textContent = val.toFixed(1) + '%';
+
+  try {
+    await api('POST', `/api/blocks/${State.selectedBlockId}/manual`, { value: val });
+    toast(`Manual Output set to ${val.toFixed(1)}%`, 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 async function resetError() {
@@ -816,6 +847,37 @@ function exportChartCSV() {
   URL.revokeObjectURL(url);
   toast('Exported to CSV', 'success');
 }
+
+// ── Export Live Chart as PNG Image ──────────────────────────────
+function exportChartPNG() {
+  const canvas = document.getElementById('trendChart');
+  if (!canvas) return toast('Chart not available', 'error');
+
+  if (!State.selectedBlockId) return toast('Select a PID loop first', 'warning');
+  const cd = State.chartData[State.selectedBlockId];
+  if (!cd || cd.labels.length === 0) return toast('No chart data to export', 'warning');
+
+  const block = State.blocks[State.selectedBlockId];
+  const dateStr = new Date().toISOString().slice(0, 10);
+
+  // Create offscreen canvas with dark bg + copy chart
+  const offC = document.createElement('canvas');
+  offC.width  = canvas.width;
+  offC.height = canvas.height;
+  const offCtx = offC.getContext('2d');
+  offCtx.fillStyle = '#050a0f';
+  offCtx.fillRect(0, 0, offC.width, offC.height);
+  offCtx.drawImage(canvas, 0, 0);
+
+  const link = document.createElement('a');
+  link.download = `Chart_${block.name.replace(/\s+/g, '_')}_${dateStr}.png`;
+  link.href = offC.toDataURL('image/png');
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  toast('Chart PNG exported!', 'success');
+}
+
 
 function rebuildChart(blockId) {
   if (!State.chart || typeof Chart === 'undefined') return;
@@ -1444,107 +1506,310 @@ function dlExportPDF() {
     toast('Please select a topic first', 'error');
     return;
   }
-  
+
   if (typeof window.jspdf === 'undefined') {
     toast('PDF Library not loaded. Check internet or local files.', 'error');
     return;
   }
-  
+
   api('GET', `/api/logs/${sel.value}`)
     .then(async res => {
       if (!res.logs || res.logs.length === 0) {
         toast('No logs available to export.', 'error');
         return;
       }
-      
+
       const latestFile = res.logs[0].filename;
-      toast('Generating PDF summary...', 'info');
-      
+      toast('Generating Official Engineering PDF Report...', 'info');
+
       try {
         const fileContent = await fetch(`/api/logs/download/${sel.value}?file=${latestFile}`).then(r => r.text());
         const lines = fileContent.split('\n').filter(l => l.trim() !== '');
-        
-        if (lines.length < 2) {
-          toast('CSV is empty', 'error');
-          return;
-        }
-        
+
+        if (lines.length < 2) { toast('CSV is empty', 'error'); return; }
+
         const headers = lines[0].split(',');
-        // Parse CSV data, keeping max 1000 rows for PDF summary to avoid memory crash
         const maxRows = 1000;
         const rowCount = lines.length - 1;
-        
-        // Take evenly distributed rows if > 1000
         const step = Math.ceil(rowCount / maxRows);
+
+        // Parse all data for chart + sampled rows for table
+        const allLabels = [], allSP = [], allPV = [], allOut = [];
         const tableData = [];
-        for (let i = 1; i < lines.length; i += step) {
-          if (lines[i]) {
-            let row = lines[i].split(',');
-            // Format time: remove T and Z, e.g. 2026-07-31 08:29:30
-            if (row[0] && row[0].includes('T')) row[0] = row[0].replace('T', ' ').substring(0, 19);
-            // Truncate Setpoint, ProcessValue, Output to 2 decimals
-            for (let j=1; j<=3; j++) {
-               if (row[j] && !isNaN(row[j])) row[j] = Number(row[j]).toFixed(2);
-            }
-            tableData.push(row);
+
+        for (let i = 1; i < lines.length; i++) {
+          if (!lines[i]) continue;
+          let row = lines[i].split(',');
+          if (row[0]) { row[0] = row[0].replace('T', ' ').split('.')[0].replace(/Z$/i, '').trim(); }
+          for (let j = 1; j <= 3; j++) {
+            if (row[j] && !isNaN(row[j])) row[j] = Number(row[j]).toFixed(2);
           }
+          // For chart: sample evenly (max 350 points for crisp presentation)
+          const chartStep = Math.ceil(rowCount / 350);
+          if ((i - 1) % chartStep === 0) {
+            allLabels.push(row[0]);
+            allSP.push(parseFloat(row[1]) || 0);
+            allPV.push(parseFloat(row[2]) || 0);
+            allOut.push(parseFloat(row[3]) || 0);
+          }
+          // For table: sample evenly (max 1000 rows)
+          if ((i - 1) % step === 0) tableData.push(row);
         }
-        
+
+        // ── Render Official Corporate Engineering Chart (Clean White Theme) ──
+        const chartImgBase64 = await new Promise((resolve) => {
+          const labelStep = Math.max(1, Math.floor(allLabels.length / 12));
+          const xLabels = allLabels.map((l, i) => i % labelStep === 0 ? (l.length >= 16 ? l.substring(11, 16) : l) : '');
+
+          const offCanvas = document.createElement('canvas');
+          offCanvas.width  = 1200; // High resolution for A4 print quality
+          offCanvas.height = 460;
+          const offCtx = offCanvas.getContext('2d');
+
+          if (typeof Chart === 'undefined') {
+            offCtx.fillStyle = '#ffffff';
+            offCtx.fillRect(0, 0, offCanvas.width, offCanvas.height);
+            offCtx.fillStyle = '#333333';
+            offCtx.font = 'bold 20px sans-serif';
+            offCtx.fillText('Chart.js engine not loaded', 60, 230);
+            resolve(offCanvas.toDataURL('image/png'));
+            return;
+          }
+
+          // Clean Corporate Background & Engineering Grid Plugin
+          const corporateBgPlugin = {
+            id: 'corporateCleanBg',
+            beforeDraw: (chart) => {
+              const { ctx, width, height } = chart;
+              ctx.save();
+
+              // 1. Pure Crisp White Background
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, width, height);
+
+              // 2. Subtle Plot Area Tint
+              ctx.fillStyle = '#f8fafc';
+              ctx.fillRect(75, 45, width - 150, height - 90);
+
+              // 3. Crisp Engineering Frame
+              ctx.strokeStyle = '#cbd5e1';
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(1, 1, width - 2, height - 2);
+
+              ctx.restore();
+            }
+          };
+
+          const offChart = new Chart(offCtx, {
+            type: 'line',
+            plugins: [corporateBgPlugin],
+            data: {
+              labels: xLabels,
+              datasets: [
+                {
+                  label: 'Setpoint (SP)',
+                  data: allSP,
+                  borderColor: '#1d4ed8', // Official Cobalt Blue
+                  backgroundColor: 'transparent',
+                  borderWidth: 2.5,
+                  borderDash: [8, 4],
+                  pointRadius: 0,
+                  tension: 0.15,
+                  fill: false,
+                  yAxisID: 'yLeft'
+                },
+                {
+                  label: 'Process Value (PV)',
+                  data: allPV,
+                  borderColor: '#059669', // Precision Emerald Green
+                  backgroundColor: 'transparent',
+                  borderWidth: 3.0,
+                  pointRadius: 0,
+                  tension: 0.15,
+                  fill: false,
+                  yAxisID: 'yLeft'
+                },
+                {
+                  label: 'Output (%)',
+                  data: allOut,
+                  borderColor: '#d97706', // Industrial Amber
+                  backgroundColor: 'transparent',
+                  borderWidth: 2.5,
+                  pointRadius: 0,
+                  tension: 0.15,
+                  fill: false,
+                  yAxisID: 'yRight'
+                }
+              ]
+            },
+            options: {
+              animation: false,
+              responsive: false,
+              plugins: {
+                legend: {
+                  display: true,
+                  position: 'top',
+                  labels: {
+                    color: '#0f172a',
+                    font: { size: 14, weight: 'bold', family: 'sans-serif' },
+                    boxWidth: 28,
+                    padding: 18,
+                    usePointStyle: false
+                  }
+                }
+              },
+              scales: {
+                x: {
+                  ticks: {
+                    color: '#334155',
+                    font: { size: 11, weight: 'bold' },
+                    maxRotation: 0
+                  },
+                  grid: { color: 'rgba(0, 0, 0, 0.06)' },
+                  border: { color: '#64748b', width: 1.5 }
+                },
+                yLeft: {
+                  type: 'linear',
+                  position: 'left',
+                  ticks: {
+                    color: '#059669',
+                    font: { size: 12, weight: 'bold' }
+                  },
+                  grid: { color: 'rgba(0, 0, 0, 0.06)' },
+                  border: { color: '#059669', width: 2 },
+                  title: {
+                    display: true,
+                    text: 'SP / PV Units',
+                    color: '#059669',
+                    font: { size: 13, weight: 'bold' }
+                  }
+                },
+                yRight: {
+                  type: 'linear',
+                  position: 'right',
+                  ticks: {
+                    color: '#d97706',
+                    font: { size: 12, weight: 'bold' }
+                  },
+                  grid: { drawOnChartArea: false },
+                  border: { color: '#d97706', width: 2 },
+                  title: {
+                    display: true,
+                    text: 'Output (%)',
+                    color: '#d97706',
+                    font: { size: 13, weight: 'bold' }
+                  }
+                }
+              }
+            }
+          });
+
+          // Wait for draw completion
+          setTimeout(() => {
+            const imgData = offCanvas.toDataURL('image/png');
+            offChart.destroy();
+            resolve(imgData);
+          }, 350);
+        });
+
+        // ── Load Logo ──
         const logoBase64 = await new Promise((resolve) => {
           const img = new Image();
           img.onload = () => {
             try {
-              const canvas = document.createElement('canvas');
-              canvas.width = img.width;
-              canvas.height = img.height;
-              const ctx = canvas.getContext('2d');
-              ctx.drawImage(img, 0, 0);
-              resolve(canvas.toDataURL('image/png'));
+              const c = document.createElement('canvas');
+              c.width = img.width; c.height = img.height;
+              c.getContext('2d').drawImage(img, 0, 0);
+              resolve(c.toDataURL('image/png'));
             } catch(e) { resolve(null); }
           };
           img.onerror = () => resolve(null);
           img.src = '/logo.png';
         });
-        
+
+        // ── Build Official A4 Landscape Engineering PDF ──
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        
-        doc.setFontSize(16);
-        doc.text(`Data Logging Report - ${State.blocks[sel.value].name}`, 14, 15);
-        
-        doc.setFontSize(10);
-        doc.text(`Source File: ${latestFile}`, 14, 22);
-        doc.text(`Total Data Points: ${rowCount} (Showing ${tableData.length} sampled points)`, 14, 27);
-        doc.text(`Generated: ${new Date().toLocaleString('th-TH')}`, 14, 32);
-        
-        // Add header text on the left of the logo
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.text('PIN MILL PLANT', 162, 14, { align: 'right' });
-        doc.setFontSize(7.5);
-        doc.setFont('helvetica', 'normal');
-        doc.setTextColor(100, 100, 100);
-        doc.text('GATE VALVE CONTROL AND MONITORING PROJECT', 162, 19, { align: 'right' });
-        doc.setTextColor(0, 0, 0);
-        
-        // Add logo image on the far right
+        const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+        // A4 Landscape: 297mm x 210mm
+
+        const blockName = State.blocks[sel.value] ? State.blocks[sel.value].name : sel.value;
+
+        // Top Corporate Header Band
+        doc.setFillColor(15, 23, 42); // Navy Slate #0f172a
+        doc.rect(0, 0, 297, 22, 'F');
+        doc.setFillColor(37, 99, 235); // Blue Accent Line #2563eb
+        doc.rect(0, 21.5, 297, 1, 'F');
+
+        // Logo Top-Right
         if (logoBase64) {
-          doc.addImage(logoBase64, 'PNG', 165, 8.5, 30, 13.5);
+          doc.addImage(logoBase64, 'PNG', 246, 4, 38, 14);
         }
-        
+
+        // Header Titles
+        doc.setFontSize(15);
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(255, 255, 255);
+        doc.text(`INDUSTRIAL PID LOGGING REPORT: ${blockName.toUpperCase()}`, 14, 10.5);
+
+        doc.setFontSize(8.5);
+        doc.setFont(undefined, 'normal');
+        doc.setTextColor(203, 213, 225);
+        doc.text(`Source File: ${latestFile}   |   Data Points: ${rowCount}   |   Report Date: ${new Date().toLocaleString('en-GB')}`, 14, 17);
+
+        // Section Title: Trend Chart
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.setFillColor(37, 99, 235);
+        doc.roundedRect(14, 26, 3, 5, 0.5, 0.5, 'F');
+        doc.text('PID TREND ANALYSIS (SETPOINT, PROCESS VALUE, OUTPUT)', 20, 30);
+
+        // Chart Container Box
+        doc.setDrawColor(203, 213, 225);
+        doc.setLineWidth(0.4);
+        doc.roundedRect(13.5, 32.5, 270, 101, 1.5, 1.5, 'S');
+
+        // Chart Image (Clean High-Contrast Engineering Theme)
+        doc.addImage(chartImgBase64, 'PNG', 14, 33, 269, 100);
+
+        // Section Title: Data Table
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(15, 23, 42);
+        doc.setFillColor(37, 99, 235);
+        doc.roundedRect(14, 137, 3, 5, 0.5, 0.5, 'F');
+        doc.text('HISTORICAL LOG DATA SAMPLES', 20, 141);
+
+        // Official Corporate Engineering Data Table
         doc.autoTable({
-          startY: 40,
+          startY: 144,
           head: [headers],
           body: tableData,
           theme: 'striped',
-          styles: { fontSize: 8 },
-          headStyles: { fillColor: [7, 13, 26] }
+          styles: {
+            fontSize: 7.5,
+            cellPadding: 1.8,
+            textColor: [15, 23, 42],
+            lineColor: [226, 232, 240],
+            lineWidth: 0.2
+          },
+          headStyles: {
+            fillColor: [15, 23, 42],
+            textColor: [255, 255, 255],
+            fontSize: 8,
+            fontStyle: 'bold'
+          },
+          alternateRowStyles: {
+            fillColor: [248, 250, 252]
+          },
+          margin: { left: 14, right: 14 }
         });
-        
+
         doc.save(`Report_${latestFile.replace('.csv', '')}.pdf`);
-        toast('PDF Downloaded!', 'success');
+        toast('Official Engineering PDF Report downloaded!', 'success');
+
       } catch (err) {
-        toast('Error generating PDF', 'error');
+        toast('Error generating PDF report', 'error');
         console.error(err);
       }
     });
@@ -1601,6 +1866,61 @@ function usbEject() {
     })
     .catch(err => toast('Error ejecting USB', 'error'));
 }
+
+// ── One-Click USB Save-All (Thai Operator Mode) ──
+async function usbSaveAll() {
+  const btn = document.getElementById('usbSaveAllBtn');
+  const statusEl = document.getElementById('usbSaveStatus');
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ &nbsp; Copying to USB... Please wait';
+    btn.style.background = 'linear-gradient(135deg,#64748b,#475569)';
+  }
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = '⏳ Mounting USB and copying files, please wait...';
+  }
+
+  try {
+    const data = await api('POST', '/api/usb/save-all');
+
+    if (data.success) {
+      const msg = data.ejected
+        ? `✅ Backup complete! ${data.copied} file(s) copied. USB ejected. Safe to remove.`
+        : `⚠️ Copy done ${data.copied} files copied — please click Eject before removing USB.`;
+
+      if (statusEl) {
+        statusEl.textContent = msg;
+        statusEl.style.color = data.ejected ? '#22c55e' : '#f59e0b';
+        statusEl.style.background = data.ejected ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)';
+      }
+      toast(msg, data.ejected ? 'success' : 'warning', 5000);
+      checkUsbStatus();
+    } else {
+      const errMsg = '❌ ' + (data.error || 'An error occurred.');
+      if (statusEl) {
+        statusEl.textContent = errMsg;
+        statusEl.style.color = '#f87171';
+        statusEl.style.background = 'rgba(248,113,113,0.1)';
+      }
+      toast(errMsg, 'error', 5000);
+    }
+  } catch (e) {
+    const errMsg = '❌ ' + (e.message || 'No response from server. Check USB connection.');
+    if (statusEl) { statusEl.textContent = errMsg; statusEl.style.color = '#f87171'; }
+    toast(errMsg, 'error', 6000);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '📥 &nbsp; Save Log to USB';
+      btn.style.background = 'linear-gradient(135deg,#0ea5e9,#0284c7)';
+    }
+    // Auto-hide status after 10s
+    if (statusEl) setTimeout(() => { statusEl.style.display = 'none'; }, 10000);
+  }
+}
+
 
 // Call status check periodically
 setInterval(checkUsbStatus, 5000);

@@ -1,3 +1,75 @@
+
+function executeUsbMount(callback) {
+  const exec = require('child_process').exec;
+  const script = `
+mkdir -p /media/usb
+if grep -qs '/media/usb ' /proc/mounts; then
+  echo "ALREADY_MOUNTED"
+  exit 0
+fi
+
+MOUNTED=0
+for dev in /dev/sda1 /dev/sdb1 /dev/sdc1 /dev/sda /dev/sdb /dev/sdc; do
+  if [ -b "$dev" ]; then
+    mount -o rw,umask=000 "$dev" /media/usb 2>/dev/null || \
+    mount -t vfat -o rw,umask=000 "$dev" /media/usb 2>/dev/null || \
+    mount -t ntfs -o rw "$dev" /media/usb 2>/dev/null || \
+    mount -t ntfs-3g -o force,rw "$dev" /media/usb 2>/dev/null || \
+    mount -t exfat -o rw,umask=000 "$dev" /media/usb 2>/dev/null || \
+    mount -o ro "$dev" /media/usb 2>/dev/null || \
+    mount "$dev" /media/usb 2>/dev/null
+    
+    if grep -qs '/media/usb ' /proc/mounts; then
+      echo "MOUNTED_DEV:$dev"
+      MOUNTED=1
+      break
+    fi
+  fi
+done
+
+if [ $MOUNTED -eq 0 ]; then
+  # Try explicit mount on /dev/sda1 to capture the exact error message
+  if [ -b /dev/sda1 ]; then
+    mount /dev/sda1 /media/usb
+  else
+    echo "NO_BLOCK_DEVICE"
+  fi
+fi
+`;
+
+  exec(script, { shell: '/bin/bash' }, (err, stdout, stderr) => {
+    exec("grep -qs '/media/usb ' /proc/mounts && echo 'YES' || echo 'NO'", (err2, stdout2) => {
+      const isMounted = (stdout2 && stdout2.trim() === 'YES');
+      if (isMounted) {
+        callback(null, { mounted: true, info: stdout.trim() });
+      } else {
+        const details = stderr.trim() || stdout.trim() || 'No recognized USB block device (/dev/sda1)';
+        callback(new Error(details), { mounted: false });
+      }
+    });
+  });
+}
+
+// Ensure Asia/Bangkok Timezone for Industrial Logging (UTC+7)
+process.env.TZ = 'Asia/Bangkok';
+
+function getLocalLogTime(timestamp = Date.now()) {
+  const d = new Date(timestamp);
+  const pad = (n) => String(n).padStart(2, '0');
+  
+  const YYYY = d.getFullYear();
+  const MM = pad(d.getMonth() + 1);
+  const DD = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mm = pad(d.getMinutes());
+  const ss = pad(d.getSeconds());
+
+  return {
+    dateStr: `${YYYY}-${MM}-${DD}`,
+    timeStr: `${YYYY}-${MM}-${DD} ${hh}:${mm}:${ss}`
+  };
+}
+
 // server.js — PID Tuning App Backend
 // Express + WebSocket + S7-1200 + FOPDT Simulator
 
@@ -523,16 +595,23 @@ function startPoller() {
           const intervalMs = (blocks[id].logInterval || 5) * 1000;
           if (now - (lastLogTime[id] || 0) >= intervalMs) {
             lastLogTime[id] = now;
-            const dateStr = new Date(now).toISOString().slice(0, 10);
+            const { dateStr, timeStr } = getLocalLogTime(now);
             const blockNameSafe = blocks[id].name.replace(/\W+/g, '_');
             const fileName = `log_${blockNameSafe}_${dateStr}.csv`;
             
             let targetDir = LOGS_DIR;
             if (blocks[id].logPath && blocks[id].logPath.trim() !== '') {
-              targetDir = blocks[id].logPath.trim();
-              if (!fs.existsSync(targetDir)) {
-                try { fs.mkdirSync(targetDir, { recursive: true }); }
-                catch(e) { targetDir = LOGS_DIR; } // fallback to default if error
+              const p = blocks[id].logPath.trim();
+              // Safety Guard: If user entered /media/usb, always log to safe internal LOGS_DIR
+              // to prevent data loss or crashes when USB is unplugged.
+              if (p === '/media/usb' || p === '/media/usb/' || p.startsWith('/media/usb')) {
+                targetDir = LOGS_DIR;
+              } else {
+                targetDir = p;
+                if (!fs.existsSync(targetDir)) {
+                  try { fs.mkdirSync(targetDir, { recursive: true }); }
+                  catch(e) { targetDir = LOGS_DIR; }
+                }
               }
             }
             const filePath = path.join(targetDir, fileName);
@@ -541,7 +620,6 @@ function startPoller() {
             if (!fs.existsSync(filePath)) {
               line += 'Time,Setpoint,ProcessValue,Output,Mode,State,ErrorBits\n';
             }
-            const timeStr = new Date(now).toISOString().replace('T', ' ').substring(0, 19);
             const { sp, pv, output, mode, state, errorBits } = point;
             const fSp = Number(sp||0).toFixed(2);
             const fPv = Number(pv||0).toFixed(2);
@@ -703,24 +781,118 @@ app.get('/api/drives', (req, res) => {
   res.json({ drives });
 });
 
-// ── USB Management API ──
+// ── USB Management API (Robust Shell Helper Integration) ──
 app.get('/api/usb/status', (req, res) => {
-  require('child_process').exec('mount | grep /media/usb', (err, stdout) => {
-    res.json({ mounted: !err && stdout.trim().length > 0 });
+  require('child_process').exec("grep -qs '/media/usb ' /proc/mounts && echo 'YES' || echo 'NO'", (err, stdout) => {
+    res.json({ mounted: stdout && stdout.trim() === 'YES' });
   });
 });
 
 app.post('/api/usb/mount', (req, res) => {
-  require('child_process').exec('mount /dev/sda1 /media/usb', (err, stdout, stderr) => {
-    if (err) return res.status(500).json({ error: stderr || err.message });
-    res.json({ success: true });
+  const mountScript = '/bin/bash /opt/pid-tuning-app/usb-mount-helper.sh';
+  require('child_process').exec(mountScript, (err, stdout, stderr) => {
+    const out = stdout ? stdout.trim() : '';
+    if (out.includes('SUCCESS')) {
+      res.json({ success: true, message: 'USB Mounted Successfully!' });
+    } else {
+      const errMsg = out.replace(/^ERROR:\s*/, '') || (stderr ? stderr.trim() : 'Failed to mount USB.');
+      res.status(400).json({ success: false, error: errMsg });
+    }
   });
 });
 
 app.post('/api/usb/eject', (req, res) => {
-  require('child_process').exec('sync && umount /media/usb', (err, stdout, stderr) => {
-    if (err) return res.status(500).json({ error: stderr || err.message });
-    res.json({ success: true });
+  const unmountScript = '/bin/bash /opt/pid-tuning-app/usb-unmount-helper.sh';
+  require('child_process').exec(unmountScript, (err, stdout, stderr) => {
+    res.json({ success: true, message: 'USB Ejected Safely' });
+  });
+});
+
+// ── USB Save-All API (Mount → Copy All Logs → Generate HTML Viewer → Eject) ──
+app.post('/api/usb/save-all', (req, res) => {
+  const exec = require('child_process').exec;
+  const USB_PATH = '/media/usb';
+  const BACKUP_DIR = `${USB_PATH}/PID_Logs_Backup`;
+
+  // Step 1: Execute robust USB mount helper
+  exec('/bin/bash /opt/pid-tuning-app/usb-mount-helper.sh', (mountErr, mountStdout, mountStderr) => {
+    const out = mountStdout ? mountStdout.trim() : '';
+    if (!out.includes('SUCCESS')) {
+      const errMsg = out.replace(/^ERROR:\s*/, '') || (mountStderr ? mountStderr.trim() : 'USB Flash Drive not found.');
+      return res.status(500).json({ success: false, error: errMsg });
+    }
+
+    // Step 2: Create dated backup directory on USB
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+    const backupFolder = `${BACKUP_DIR}/${todayStr}`;
+
+    exec(`mkdir -p "${backupFolder}"`, (err3) => {
+      if (err3) return res.status(500).json({ success: false, error: 'Cannot create folder on USB: ' + err3.message });
+
+      // Step 3: Collect all CSV log paths
+      const allLogDirs = new Set([LOGS_DIR]);
+      Object.values(blocks).forEach(b => {
+        if (b.logPath && b.logPath.trim()) allLogDirs.add(b.logPath.trim());
+      });
+
+      const dirsArray = Array.from(allLogDirs);
+      let totalCopied = 0;
+      let copyErrors = [];
+      let processed = 0;
+
+      dirsArray.forEach(logDir => {
+        try {
+          if (!fs.existsSync(logDir)) { processed++; return; }
+          const files = fs.readdirSync(logDir).filter(f => f.endsWith('.csv'));
+          if (files.length === 0) { processed++; return; }
+
+          let filesDone = 0;
+          files.forEach(file => {
+            const src = `"${logDir}/${file}"`;
+            const dst = `"${backupFolder}/${file}"`;
+            exec(`cp ${src} ${dst}`, (cpErr) => {
+              if (!cpErr) totalCopied++;
+              else copyErrors.push(file);
+              filesDone++;
+              if (filesDone === files.length) {
+                processed++;
+                if (processed === dirsArray.length) {
+                  // Step 4: Auto-generate Standalone Offline HTML Chart Viewer
+                  try {
+                    const { generateHtmlViewer } = require('./generate-usb-viewer.js');
+                    generateHtmlViewer(backupFolder);
+                  } catch (e) {
+                    if (typeof generateUsbHtmlViewer === 'function') generateUsbHtmlViewer(backupFolder);
+                  }
+
+                  // Step 5: Safely Unmount USB
+                  exec('/bin/bash /opt/pid-tuning-app/usb-unmount-helper.sh', (ejErr) => {
+                    const ejected = !ejErr;
+                    res.json({
+                      success: true,
+                      copied: totalCopied,
+                      errors: copyErrors,
+                      ejected,
+                      folder: backupFolder,
+                      message: `Backup complete! ${totalCopied} file(s) copied. USB ejected. Safe to remove.`
+                    });
+                  });
+                }
+              }
+            });
+          });
+        } catch (e) {
+          processed++;
+        }
+      });
+
+      if (dirsArray.length === 0) {
+        exec('/bin/bash /opt/pid-tuning-app/usb-unmount-helper.sh', () => {});
+        return res.json({ success: false, error: 'No log files found in the system.' });
+      }
+    });
   });
 });
 

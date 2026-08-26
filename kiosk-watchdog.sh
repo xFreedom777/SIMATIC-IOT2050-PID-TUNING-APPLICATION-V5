@@ -1,7 +1,7 @@
 #!/bin/bash
-# ═════════════════════════════════════════════════════════════════
+# ================================================================
 # Siemens IOT2050 — Self-Healing Watchdog Daemon
-# ═════════════════════════════════════════════════════════════════
+# ================================================================
 
 LOG_FILE="/var/log/kiosk-watchdog.log"
 exec >> "$LOG_FILE" 2>&1
@@ -49,6 +49,12 @@ while true; do
     sleep 2
     systemctl restart kiosk.service || true
     sleep 60
+  fi
+
+  # 5. Continuous Time Persistence (Save timestamp every 20s if year >= 2024)
+  CURRENT_YEAR=$(date '+%Y')
+  if [ "$CURRENT_YEAR" -ge 2024 ]; then
+    date '+%Y-%m-%d %H:%M:%S' > /etc/last_saved_time 2>/dev/null || true
   fi
 
   sleep 20

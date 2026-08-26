@@ -1,7 +1,7 @@
 #!/bin/bash
-# ═════════════════════════════════════════════════════════════════
+# ================================================================
 # Siemens SIMATIC IOT2050 — 24/7 Kiosk Stability Setup Script
-# ═════════════════════════════════════════════════════════════════
+# ================================================================
 set -e
 
 echo "==========================================================="
@@ -17,7 +17,7 @@ APP_DIR="/opt/pid-tuning-app"
 USER_HOME="/root"
 
 # 1. Disable System Idle & Lid Sleep Actions in logind.conf
-echo "--> [1/6] Disabling logind sleep & idle actions..."
+echo "--> [1/8] Disabling logind sleep & idle actions..."
 mkdir -p /etc/systemd/logind.conf.d/
 cat << 'EOF' > /etc/systemd/logind.conf.d/247-stability.conf
 [Login]
@@ -30,7 +30,7 @@ EOF
 systemctl restart systemd-logind || true
 
 # 2. Disable Kernel Console Blanking
-echo "--> [2/6] Disabling Linux kernel console blanking..."
+echo "--> [2/8] Disabling Linux kernel console blanking..."
 if [ -f /sys/module/kernel/parameters/consoleblank ]; then
   echo 0 > /sys/module/kernel/parameters/consoleblank 2>/dev/null || true
 fi
@@ -41,7 +41,7 @@ else
 fi
 
 # 3. Limit Systemd Journal Logs to 100MB (Prevents Disk Exhaustion)
-echo "--> [3/6] Configuring Journald log limits (Max 100MB)..."
+echo "--> [3/8] Configuring Journald log limits (Max 100MB)..."
 mkdir -p /etc/systemd/journald.conf.d/
 cat << 'EOF' > /etc/systemd/journald.conf.d/limit-size.conf
 [Journal]
@@ -52,7 +52,7 @@ EOF
 systemctl restart systemd-journald || true
 
 # 4. Generate Production ~/.xinitrc with GPU-disabled & DPMS-off flags
-echo "--> [4/6] Installing X11 Kiosk launcher (~/.xinitrc)..."
+echo "--> [4/8] Installing X11 Kiosk launcher (~/.xinitrc)..."
 cat << 'EOF' > "${USER_HOME}/.xinitrc"
 #!/bin/bash
 # ── Siemens IOT2050 24/7 Kiosk Launcher ──
@@ -102,11 +102,9 @@ EOF
 chmod +x "${USER_HOME}/.xinitrc"
 
 # 5. RAM Tmpfs Protection & Ext4 Error Policy
-echo "--> [5/7] Configuring /etc/fstab for Tmpfs and Ext4 policies..."
-# Ensure Ext4 errors=continue is set on root (prevents ro mount on non-critical errors)
+echo "--> [5/8] Configuring /etc/fstab for Tmpfs and Ext4 policies..."
 sed -i 's/errors=remount-ro/errors=continue/g' /etc/fstab
 
-# Add tmpfs for high-write directories to save SD Card lifecycle
 if ! grep -q "tmpfs /var/log" /etc/fstab; then
   echo "tmpfs /var/log tmpfs defaults,noatime,nosuid,mode=0755,size=100m 0 0" >> /etc/fstab
 fi
@@ -118,11 +116,11 @@ if ! grep -q "tmpfs /var/tmp" /etc/fstab; then
 fi
 
 # 6. Install Watchdog script
-echo "--> [6/7] Installing Self-Healing Watchdog script..."
+echo "--> [6/8] Installing Self-Healing Watchdog script..."
 chmod +x "${APP_DIR}/kiosk-watchdog.sh" 2>/dev/null || true
 
-# 7. Install & Enable Systemd Services
-echo "--> [7/7] Registering production Systemd services..."
+# 7. Install & Enable Standard Systemd Services
+echo "--> [7/8] Registering production Systemd services..."
 cp "${APP_DIR}/pid-app.service" /etc/systemd/system/ 2>/dev/null || true
 cp "${APP_DIR}/kiosk-watchdog.service" /etc/systemd/system/ 2>/dev/null || true
 cp "${APP_DIR}/kiosk.service" /etc/systemd/system/ 2>/dev/null || true
@@ -132,7 +130,124 @@ systemctl enable pid-app.service || true
 systemctl enable kiosk-watchdog.service || true
 systemctl enable kiosk.service || true
 
+# 8. Offline Industrial Time Persistence (Restores last known timestamp on boot & saves on shutdown)
+echo "--> [8/8] Configuring offline system time persistence..."
+# Write boot-time restore service (starts early, restores clock from file)
+cat << 'EOF' > /etc/systemd/system/save-last-time.service
+[Unit]
+Description=Restore System Time from Last Saved Timestamp (Offline NTP)
+DefaultDependencies=no
+After=local-fs.target
+Before=network.target sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/bin/sh -c 'if [ -f /etc/last_saved_time ]; then ts=$(cat /etc/last_saved_time); date -s "$ts" >/dev/null 2>&1 && hwclock -w >/dev/null 2>&1 && echo "[OK] System time restored from $ts" || true; fi'
+
+[Install]
+WantedBy=sysinit.target
+EOF
+
+# Write shutdown-time save service (saves clock before poweroff/reboot)
+cat << 'EOF' > /etc/systemd/system/save-time-on-shutdown.service
+[Unit]
+Description=Save System Time Before Shutdown (Offline NTP Backup)
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target poweroff.target
+After=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/bin/sh -c 'if [ "$(date +%Y)" -ge "2024" ]; then date "+%Y-%m-%d %H:%M:%S" > /etc/last_saved_time && hwclock -w >/dev/null 2>&1 && echo "[OK] System time saved: $(cat /etc/last_saved_time)" || true; fi'
+
+[Install]
+WantedBy=halt.target reboot.target shutdown.target poweroff.target
+EOF
+
+systemctl daemon-reload
+systemctl daemon-reload
+systemctl enable save-last-time.service || true
+systemctl enable save-time-on-shutdown.service || true
+systemctl start save-last-time.service || true
+echo "    [OK] Time persistence services installed (boot-restore + shutdown-save)" 
+
 echo "==========================================================="
-echo " ✅ 24/7 Stability Parameters configured successfully!"
-echo " 👉 Reboot IOT2050 to start 24/7 mode: reboot"
+echo " ✅ 24/7 Stability & Time Persistence configured!"
+echo " [INFO] Reboot IOT2050 to start 24/7 mode: reboot"
+
+# 9. Auto-Copy Logs to USB every night at 00:01 (Industrial Auto-Export)
+echo "--> [9/9] Installing midnight Auto-Copy cron job..."
+cat << 'CRONEOF' > /usr/local/bin/pid-usb-backup.sh
+#!/bin/bash
+# Midnight Auto-Backup: Copy all PID Log CSV files to USB Flash Drive
+LOG=/var/log/pid-usb-backup.log
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] 🕛 Auto-Backup Started" >> "$LOG"
+
+# Mount USB (ignore error if already mounted or not present)
+mount /dev/sda1 /media/usb 2>/dev/null || true
+
+# Check if USB is actually mounted
+if ! mount | grep -q /media/usb; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⚠️ USB not available. Skipping backup." >> "$LOG"
+  exit 0
+fi
+
+# Create dated folder on USB
+TODAY=$(date '+%Y-%m-%d')
+DEST="/media/usb/PID_Logs_Backup/${TODAY}"
+mkdir -p "$DEST"
+
+# Copy all CSV files from /opt/pid-tuning-app/logs/
+SRC="/opt/pid-tuning-app/logs"
+if [ -d "$SRC" ]; then
+  COUNT=$(find "$SRC" -name "*.csv" | wc -l)
+  cp -u "$SRC"/*.csv "$DEST"/ 2>/dev/null || true
+  # Auto-generate Click_To_View_Chart.html inside USB backup folder
+  node /opt/pid-tuning-app/generate-usb-viewer.js "$DEST" 2>/dev/null || true
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Copied ${COUNT} files → $DEST" >> "$LOG"
+fi
+
+# Sync and Eject
+sync
+umount /media/usb 2>/dev/null || true
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ Auto-Backup Done. USB Ejected." >> "$LOG"
+
+# Keep log max 500 lines
+tail -n 500 "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+CRONEOF
+chmod +x /usr/local/bin/pid-usb-backup.sh
+
+# Install systemd timer (replaces crontab - IOT2050 Debian has no cron daemon)
+cat << 'TIMEREOF' > /etc/systemd/system/pid-usb-backup.timer
+[Unit]
+Description=Midnight USB Log Auto-Backup Timer
+Requires=pid-usb-backup.service
+
+[Timer]
+OnCalendar=*-*-* 00:01:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+cat << 'SVCEOF' > /etc/systemd/system/pid-usb-backup.service
+[Unit]
+Description=PID USB Log Auto-Backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pid-usb-backup.sh
+StandardOutput=journal
+StandardError=journal
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable pid-usb-backup.timer || true
+systemctl start pid-usb-backup.timer || true
+echo "    [OK] Systemd timer installed: USB auto-backup every night at 00:01" 
+
 echo "==========================================================="
