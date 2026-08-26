@@ -252,59 +252,6 @@ powershell -ExecutionPolicy Bypass -File .\Deploy-Patch.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Deploy-Patch.ps1
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    SIEMENS S7-1200 PLC (192.168.121.211)                    │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ DB322: Non-Optimized Contiguous Struct (<240 Bytes = 1 Single PDU)    │  │
-│  │  • Read: PV, SP, Output, Mode, Status, PLC_DateTime (DTL 12B)         │  │
-│  │  • Write: CMD_Manual_Out, CMD_Mode, Heartbeat_In (Toggle Word)        │  │
-│  ├───────────────────────────────────────────────────────────────────────┤  │
-│  │ Safety Watchdog Logic (OB30 / 100ms Cyclic Interrupt):                │  │
-│  │  • TON Timer (3.0s): ถ้า Heartbeat นิ่ง > 3s ➔ สั่ง Fallback Auto/Safe│  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────▲──────────────────────────────────────┘
-                                       │
-                        S7comm Protocol (TCP Port 102)
-                   100ms Single PDU Read / 500ms Heartbeat
-                                       │
-┌──────────────────────────────────────▼──────────────────────────────────────┐
-│                    SIEMENS SIMATIC IOT2050 (Debian Linux)                   │
-│                                                                             │
-│ ┌─────────────────────────────────────────────────────────────────────────┐ │
-│ │ LAYER 1: HARDWARE & OS INTEGRITY GUARDS                                 │ │
-│ │  • Hardware RTC (CR2032 Battery) + Startup PLC Clock Auto-Sync          │ │
-│ │  • Linux Hardware Watchdog (/dev/watchdog via systemd 30s)              │ │
-│ │  • eMMC Wear Guard: tmpfs (RAM Disk @ /tmp/pid_buffer)                  │ │
-│ │  • Disk Full Guard: journald capped @ 100MB + Daily Gzip Logrotate      │ │
-│ │  • udev Engine: Hotplug USB Auto-mount (FAT32, NTFS, exFAT)             │ │
-│ └────────────────────────────────────┬────────────────────────────────────┘ │
-│                                      │                                      │
-│ ┌────────────────────────────────────▼────────────────────────────────────┐ │
-│ │ LAYER 2: BACKEND CORE ENGINE (Node.js Event-Driven)                     │ │
-│ │  • nodes7 Driver: 10Hz Single-PDU Polling + 500ms Deadman Heartbeat     │ │
-│ │  • High-Speed Data Ingestion: Push 10Hz data into In-Memory Buffer      │ │
-│ │  • Storage Engine: SQLite (WAL Mode) Flush ทุก 5 วินาที (Zero eMMC Wear)│ │
-│ │  • WebSocket Gateway: Broadcast telemetry (PV, SP, Out, Comm_Status)    │ │
-│ │  • Command Validator: 0-100% Clamping & Command Ack Echo                │ │
-│ └────────────────────────────────────┬────────────────────────────────────┘ │
-│                                      │                                      │
-│ ┌────────────────────────────────────▼────────────────────────────────────┐ │
-│ │ LAYER 3: INDUSTRIAL KIOSK HMI (Client-Side Chromium)                    │ │
-│ │  • High-Perf WebGL/Canvas Chart: Fixed Circular Buffer (600 Points/1min)│ │
-│ │  • Zero Memory Leak: ไม่ต้อง Reload หน้าจอ (รันต่อเนื่อง 24/7 ไม่ค้าง)   │ │
-│ │  • 2-Way Interlocked Controls: Manual Slider + Input + Echo Verification│ │
-│ │  • Client-Side PDF Generator (jsPDF): เรนเดอร์บน Browser ไม่กิน CPU บอร์ด│ │
-│ │  • Disconnect Safety Banner: แจ้งเตือนสีแดงทันทีถ้า Network ขาด > 1 วิ  │ │
-│ └─────────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                        Midnight Timer / 1-Click Export
-                                       │
-┌──────────────────────────────────────▼──────────────────────────────────────┐
-│                  USB FLASH DRIVE / MITR PHOL ERP-SCADA                      │
-│       • Daily Auto-Export: Compressed CSV (/media/usb/logs_YYYYMMDD.csv.gz) │
-│       • Engineering Step Test PDF Report (High-Contrast Mitr Phol Theme)   │
-└─────────────────────────────────────────────────────────────────────────────┘
 
 
 ---
