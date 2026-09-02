@@ -258,16 +258,26 @@
 
             <!-- Chart -->
             <div class="chart-wrap" style="flex:1">
-              <div class="chart-toolbar">
+              <div class="chart-toolbar" style="flex-wrap:wrap; gap:8px;">
                 <div class="chart-legend">
                   <div class="legend-item"><div class="legend-line sp"></div> SP</div>
-                  <div class="legend-item"><div class="legend-line pv"></div> PV</div>
+                  <div class="legend-item"><div class="legend-line pv"></div> <span id="legendPvText">PV</span> <span id="legendPvMode" style="font-size:10px;color:#4ade80;font-weight:600;">(Smooth)</span></div>
+                  <div class="legend-item" id="legendBandItem"><div class="legend-box" style="width:12px;height:8px;background:rgba(34,197,94,0.25);border:1px solid rgba(34,197,94,0.4);border-radius:2px;display:inline-block;margin-right:2px;"></div> Noise Band</div>
                   <div class="legend-item"><div class="legend-line output"></div> Output %</div>
                 </div>
-                <div class="row" style="gap:6px">
-                  <button class="btn btn-xs btn-ghost" onclick="exportChartCSV()" style="margin-right:10px" title="Export graph history to CSV">💾 Export CSV</button>
-                  <span class="text-xs text-muted">Window:</span>
-                  <select class="input" id="chartWindow" style="width:90px;padding:4px 6px;font-size:12px" onchange="setChartWindow(this.value)">
+                <div class="row" style="gap:8px;align-items:center;">
+                  <button id="btnFilterToggle" class="btn btn-xs" onclick="toggleSmoothFilter()" title="Toggle between Smooth (Filtered) and Raw Data" style="height:32px;padding:4px 12px;font-size:12px;font-weight:600;background:rgba(34,197,94,0.18);border:1px solid #22c55e;color:#4ade80;border-radius:6px;cursor:pointer;touch-action:manipulation;">🌿 Smooth</button>
+                  <span class="text-xs text-muted" style="margin-left:4px;font-size:12px;">Range:</span>
+                  <select class="input" id="chartYScale" style="height:32px;min-width:115px;padding:4px 10px;font-size:12px;border-radius:6px;touch-action:manipulation;" onchange="setChartYScale(this.value)">
+                    <option value="200" selected>-0.1 - 200</option>
+                    <option value="auto">Auto Zoom</option>
+                    <option value="50">0 - 50</option>
+                    <option value="100">0 - 100</option>
+                    <option value="250">0 - 250</option>
+                  </select>
+                  <button class="btn btn-xs btn-ghost" onclick="exportChartCSV()" style="height:32px;padding:4px 10px;font-size:12px;border-radius:6px;touch-action:manipulation;" title="Export graph history to CSV">💾 CSV</button>
+                  <span class="text-xs text-muted" style="font-size:12px;">Window:</span>
+                  <select class="input" id="chartWindow" style="height:32px;width:80px;padding:4px 8px;font-size:12px;border-radius:6px;touch-action:manipulation;" onchange="setChartWindow(this.value)">
                     <option value="1">1 min</option>
                     <option value="5" selected>5 min</option>
                     <option value="10">10 min</option>

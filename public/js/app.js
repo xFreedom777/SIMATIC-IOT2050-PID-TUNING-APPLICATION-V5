@@ -19,7 +19,10 @@ const State = {
   alarms:          [],
   lastErrorBits:   {},
   lowPerfMode:     false,
-  lastChartUpdate: 0
+  lastChartUpdate: 0,
+  smoothMode:      true,   // Default: Smooth View (Filtered EMA + Noise Band)
+  chartYScale:     '200', // Default: Auto Zoom (Smart Margin)
+  chartAlpha:      0.15    // EMA smoothing factor (0.15 = optimal noise suppression)
 };
 
 // ── PIN helpers (localStorage, base64 encoded — UX protection) ──
@@ -537,6 +540,7 @@ function selectBlock(id) {
   const live = State.lastLiveData[id];
   if (live) updateLiveDisplay(live.sp, live.pv, live.output, live.mode, live.state, live.errorBits);
   renderParams(block);
+  updateScaleLabels(pvUnit || spUnit);
   rebuildChart(id);
   document.getElementById('paramActions').style.display = 'flex';
 }
@@ -756,6 +760,8 @@ async function resetError() {
 // ══════════════════════════════════════════════
 // Trend Chart
 // ══════════════════════════════════════════════
+// Trend Chart (Enhanced with Smooth EMA & Noise Band)
+// ══════════════════════════════════════════════
 function initChart() {
   if (typeof Chart === 'undefined') {
     console.warn('Chart.js not loaded (no internet). Chart disabled.');
@@ -774,22 +780,79 @@ function initChart() {
     data: {
       labels: [],
       datasets: [
-        { label:'SP',     data:[], borderColor:'#00d4ff', borderDash:[6,3], borderWidth:1.5, pointRadius:0, tension:0.3 },
-        { label:'PV',     data:[], borderColor:'#22c55e', borderWidth:2,    pointRadius:0, tension:0.3 },
-        { label:'Output', data:[], borderColor:'#f59e0b', borderWidth:1.5,  pointRadius:0, tension:0.3, yAxisID:'y2' },
+        // 0: Setpoint (SP) - Cyan Dashed Line (Top layer order:1 so it never gets hidden behind PV/Noise Band)
+        { label:'SP',     data:[], borderColor:'#00d4ff', borderDash:[6,3], borderWidth:2.2, pointRadius:0, tension:0.1, yAxisID:'y', order:1 },
+        // 1: Process Value (PV) - Green Line
+        { label:'PV',     data:[], borderColor:'#22c55e', borderWidth:2,   pointRadius:0, tension:0.2, yAxisID:'y', order:2 },
+        // 2: Noise Band Upper - Shading area (Background order:10)
+        { label:'PV Max', data:[], borderColor:'transparent', backgroundColor:'rgba(34,197,94,0.13)', fill:'+1', pointRadius:0, tension:0.2, yAxisID:'y', order:10 },
+        // 3: Noise Band Lower
+        { label:'PV Min', data:[], borderColor:'transparent', backgroundColor:'transparent', pointRadius:0, tension:0.2, yAxisID:'y', order:10 },
+        // 4: Controller Output - Orange Line
+        { label:'Output', data:[], borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, tension:0.2, yAxisID:'y2', order:3 },
       ],
     },
     options: {
-      responsive:true, maintainAspectRatio:false, animation:false,
-      interaction:{ intersect:false, mode:'index' },
-      plugins:{
-        legend:{ display:false },
-        tooltip:{ backgroundColor:'rgba(7,13,26,0.95)', borderColor:'rgba(255,255,255,0.1)', borderWidth:1, titleColor:'#8b9ab5', bodyColor:'#f0f6ff', padding:10 },
+      responsive: true, 
+      maintainAspectRatio: false, 
+      animation: false,
+      interaction: { intersect:false, mode:'index' },
+      plugins: {
+        legend: { display:false },
+        tooltip: {
+          backgroundColor: 'rgba(7,13,26,0.95)',
+          borderColor: 'rgba(255,255,255,0.1)',
+          borderWidth: 1,
+          titleColor: '#8b9ab5',
+          bodyColor: '#f0f6ff',
+          padding: 10,
+          filter: function(tooltipItem) {
+            // Hide Min/Max helper datasets from tooltip clutter
+            return tooltipItem.datasetIndex !== 2 && tooltipItem.datasetIndex !== 3;
+          },
+          callbacks: {
+            label: function(context) {
+              const dsIdx = context.datasetIndex;
+              const val = context.parsed.y;
+              if (dsIdx === 0) return ` SP: ${val !== null && !isNaN(val) ? val.toFixed(2) : '-'}`;
+              if (dsIdx === 1) {
+                if (State.smoothMode && State.selectedBlockId && State.chartData[State.selectedBlockId]) {
+                  const dataIdx = context.dataIndex;
+                  const cd = State.chartData[State.selectedBlockId];
+                  const rawVal = (cd.pv && cd.pv[dataIdx] !== undefined) ? cd.pv[dataIdx] : null;
+                  const minVal = (cd.pvMin && cd.pvMin[dataIdx] !== undefined) ? cd.pvMin[dataIdx] : null;
+                  const maxVal = (cd.pvMax && cd.pvMax[dataIdx] !== undefined) ? cd.pvMax[dataIdx] : null;
+                  const rangeStr = (minVal !== null && maxVal !== null) ? ` [Noise: ${minVal.toFixed(1)}-${maxVal.toFixed(1)}]` : '';
+                  return ` PV (Smooth): ${val.toFixed(2)} ${rangeStr}`;
+                }
+                return ` PV (Raw): ${val !== null && !isNaN(val) ? val.toFixed(2) : '-'}`;
+              }
+              if (dsIdx === 4) return ` Output: ${val !== null && !isNaN(val) ? val.toFixed(2) : '-'}%`;
+              return `${context.dataset.label}: ${val}`;
+            }
+          }
+        },
       },
-      scales:{
-        x:{ type:'category', ticks:{ color:'#4a5a75', maxTicksLimit:6, font:{size:10} }, grid:{ color:'rgba(255,255,255,0.04)' } },
-        y:{ position:'left', ticks:{ color:'#4a5a75', font:{size:10} }, grid:{ color:'rgba(255,255,255,0.04)' } },
-        y2:{ position:'right', min:0, max:100, ticks:{ color:'#f59e0b', font:{size:10}, callback:v=>v+'%' }, grid:{ display:false } },
+      scales: {
+        x: { 
+          type: 'category', 
+          ticks: { color: '#4a5a75', maxTicksLimit: 10, font: { size: 10 } }, 
+          grid: { color: 'rgba(255,255,255,0.05)' } 
+        },
+        y: { 
+          position: 'left', 
+          min: -0.1, 
+          max: 200, 
+          ticks: { color: '#4a5a75', stepSize: 10, font: { size: 10 } }, 
+          grid: { color: 'rgba(255,255,255,0.05)' } 
+        },
+        y2: { 
+          position: 'right', 
+          min: 0, 
+          max: 100, 
+          ticks: { color: '#f59e0b', stepSize: 20, font: { size: 10 }, callback: v => v + '%' }, 
+          grid: { display: false } 
+        },
       },
     },
   });
@@ -797,23 +860,70 @@ function initChart() {
 
 function pushChartData(blockId, sp, pv, output, ts) {
   if (!State.chart || typeof Chart === 'undefined') return;
-  if (!State.chartData[blockId]) State.chartData[blockId] = { sp:[], pv:[], out:[], labels:[] };
+  if (!State.chartData[blockId]) {
+    State.chartData[blockId] = { sp:[], pv:[], smoothPv:[], pvMin:[], pvMax:[], out:[], labels:[] };
+  }
   const cd = State.chartData[blockId];
+  if (!cd.smoothPv) cd.smoothPv = [];
+  if (!cd.pvMin) cd.pvMin = [];
+  if (!cd.pvMax) cd.pvMax = [];
+
   const label = new Date(ts).toLocaleTimeString('th-TH', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
   const numSp = Number(sp);
   const numPv = Number(pv);
   const numOut = Number(output);
-  cd.sp.push(isNaN(numSp) ? 0 : numSp); 
-  cd.pv.push(isNaN(numPv) ? 0 : numPv); 
-  cd.out.push(isNaN(numOut) ? 0 : numOut); 
+
+  const validSp = isNaN(numSp) ? 0 : numSp;
+  const validPv = isNaN(numPv) ? 0 : numPv;
+  const validOut = isNaN(numOut) ? 0 : numOut;
+
+  // Calculate EMA (Exponential Moving Average)
+  const alpha = State.chartAlpha || 0.15;
+  const lastEma = cd.smoothPv.length > 0 ? cd.smoothPv[cd.smoothPv.length - 1] : validPv;
+  const smoothVal = Number(((validPv * alpha) + (lastEma * (1 - alpha))).toFixed(2));
+
+  // Calculate Rolling Min/Max envelope over last 15 points
+  const recentSlice = cd.pv.slice(Math.max(0, cd.pv.length - 15));
+  recentSlice.push(validPv);
+  const minVal = Number(Math.min(...recentSlice).toFixed(2));
+  const maxVal = Number(Math.max(...recentSlice).toFixed(2));
+
+  cd.sp.push(validSp);
+  cd.pv.push(validPv);
+  cd.smoothPv.push(smoothVal);
+  cd.pvMin.push(minVal);
+  cd.pvMax.push(maxVal);
+  cd.out.push(validOut);
   cd.labels.push(label);
+
   const maxPts = State.chartWindow * 30;
-  if (cd.sp.length > maxPts) { cd.sp.shift(); cd.pv.shift(); cd.out.shift(); cd.labels.shift(); }
+  while (cd.sp.length > maxPts) {
+    cd.sp.shift();
+    cd.pv.shift();
+    if (cd.smoothPv.length > 0) cd.smoothPv.shift();
+    if (cd.pvMin.length > 0) cd.pvMin.shift();
+    if (cd.pvMax.length > 0) cd.pvMax.shift();
+    cd.out.shift();
+    cd.labels.shift();
+  }
+
   if (blockId === State.selectedBlockId) {
     State.chart.data.labels           = cd.labels;
     State.chart.data.datasets[0].data = cd.sp;
-    State.chart.data.datasets[1].data = cd.pv;
-    State.chart.data.datasets[2].data = cd.out;
+    
+    if (State.smoothMode) {
+      State.chart.data.datasets[1].data = cd.smoothPv;
+      State.chart.data.datasets[1].borderWidth = 2;
+      State.chart.data.datasets[2].data = cd.pvMax;
+      State.chart.data.datasets[3].data = cd.pvMin;
+    } else {
+      State.chart.data.datasets[1].data = cd.pv;
+      State.chart.data.datasets[1].borderWidth = 1.2;
+      State.chart.data.datasets[2].data = [];
+      State.chart.data.datasets[3].data = [];
+    }
+    
+    State.chart.data.datasets[4].data = cd.out;
     
     // Smooth Canvas Throttle for Edge Devices (Max 5 canvas draws/sec)
     const now = Date.now();
@@ -823,6 +933,140 @@ function pushChartData(blockId, sp, pv, output, ts) {
       State.lastChartUpdate = now;
     }
   }
+}
+
+function rebuildChart(blockId) {
+  if (!State.chart || typeof Chart === 'undefined') return;
+  const cd = State.chartData[blockId];
+  if (!cd) return;
+
+  State.chart.data.labels           = cd.labels;
+  State.chart.data.datasets[0].data = cd.sp;
+
+  if (State.smoothMode) {
+    State.chart.data.datasets[1].data = (cd.smoothPv && cd.smoothPv.length) ? cd.smoothPv : cd.pv;
+    State.chart.data.datasets[1].borderWidth = 2;
+    State.chart.data.datasets[2].data = cd.pvMax || [];
+    State.chart.data.datasets[3].data = cd.pvMin || [];
+  } else {
+    State.chart.data.datasets[1].data = cd.pv;
+    State.chart.data.datasets[1].borderWidth = 1.2;
+    State.chart.data.datasets[2].data = [];
+    State.chart.data.datasets[3].data = [];
+  }
+
+  State.chart.data.datasets[4].data = cd.out;
+  applyChartYScale();
+  State.chart.update();
+}
+
+function toggleSmoothFilter() {
+  State.smoothMode = !State.smoothMode;
+  const btn = document.getElementById('btnFilterToggle');
+  const modeLabel = document.getElementById('legendPvMode');
+  const bandItem = document.getElementById('legendBandItem');
+
+  if (State.smoothMode) {
+    if (btn) {
+      btn.innerHTML = '🌿 Smooth';
+      btn.style.background = 'rgba(34,197,94,0.18)';
+      btn.style.borderColor = '#22c55e';
+      btn.style.color = '#4ade80';
+    }
+    if (modeLabel) {
+      modeLabel.textContent = '(Smooth)';
+      modeLabel.style.color = '#4ade80';
+    }
+    if (bandItem) bandItem.style.display = 'flex';
+    toast('Mode: Filtered & Smoothed View (Default)', 'info', 1500);
+  } else {
+    if (btn) {
+      btn.innerHTML = '⚡ Raw';
+      btn.style.background = 'rgba(245,158,11,0.18)';
+      btn.style.borderColor = '#f59e0b';
+      btn.style.color = '#fbbf24';
+    }
+    if (modeLabel) {
+      modeLabel.textContent = '(Raw Data)';
+      modeLabel.style.color = '#fbbf24';
+    }
+    if (bandItem) bandItem.style.display = 'none';
+    toast('Mode: Raw High-Frequency Data', 'warning', 1500);
+  }
+
+  if (State.selectedBlockId) rebuildChart(State.selectedBlockId);
+}
+
+
+function updateScaleLabels(unit) {
+  const sel = document.getElementById('chartYScale');
+  if (!sel) return;
+  const u = unit ? ` (${unit})` : '';
+  sel.options[0].text = `-0.1 - 200${u}`;
+  sel.options[1].text = 'Auto Zoom';
+  sel.options[2].text = `0 - 50${u}`;
+  sel.options[3].text = `0 - 100${u}`;
+  sel.options[4].text = `0 - 250${u}`;
+}
+
+function setChartYScale(val) {
+  State.chartYScale = val;
+  applyChartYScale();
+  if (State.chart) State.chart.update();
+}
+
+function applyChartYScale() {
+  if (!State.chart || !State.chart.options.scales || !State.chart.options.scales.y) return;
+  const yScale = State.chart.options.scales.y;
+  const val = State.chartYScale || '200';
+
+  if (!yScale.ticks) yScale.ticks = { color: '#4a5a75', font: { size: 10 } };
+
+  if (val === '200') {
+    yScale.min = -0.1;
+    yScale.max = 200;
+    yScale.ticks.stepSize = 10;
+    delete yScale.grace;
+  } else if (val === '50') {
+    yScale.min = -0.1;
+    yScale.max = 50;
+    yScale.ticks.stepSize = 10;
+    delete yScale.grace;
+  } else if (val === '100') {
+    yScale.min = -0.1;
+    yScale.max = 100;
+    yScale.ticks.stepSize = 10;
+    delete yScale.grace;
+  } else if (val === '250') {
+    yScale.min = -0.1;
+    yScale.max = 250;
+    yScale.ticks.stepSize = 25;
+    delete yScale.grace;
+  } else {
+    // 'auto' - Smart Auto Zoom with 15% headroom
+    delete yScale.min;
+    delete yScale.max;
+    delete yScale.ticks.stepSize;
+    yScale.grace = '15%';
+  }
+}
+
+function setChartWindow(val) {
+  State.chartWindow = parseInt(val);
+  const maxPts = State.chartWindow * 30;
+  Object.keys(State.chartData).forEach(id => {
+    const cd = State.chartData[id];
+    while (cd.sp.length > maxPts) {
+      cd.sp.shift();
+      cd.pv.shift();
+      if (cd.smoothPv && cd.smoothPv.length > 0) cd.smoothPv.shift();
+      if (cd.pvMin && cd.pvMin.length > 0) cd.pvMin.shift();
+      if (cd.pvMax && cd.pvMax.length > 0) cd.pvMax.shift();
+      cd.out.shift();
+      cd.labels.shift();
+    }
+  });
+  if (State.selectedBlockId) rebuildChart(State.selectedBlockId);
 }
 
 function exportChartCSV() {
@@ -878,31 +1122,9 @@ function exportChartPNG() {
   toast('Chart PNG exported!', 'success');
 }
 
-
-function rebuildChart(blockId) {
-  if (!State.chart || typeof Chart === 'undefined') return;
-  const cd = State.chartData[blockId];
-  if (!cd) return;
-  State.chart.data.labels           = cd.labels;
-  State.chart.data.datasets[0].data = cd.sp;
-  State.chart.data.datasets[1].data = cd.pv;
-  State.chart.data.datasets[2].data = cd.out;
-  State.chart.update();
-}
-
-function setChartWindow(val) {
-  State.chartWindow = parseInt(val);
-  const maxPts = State.chartWindow * 30;
-  Object.keys(State.chartData).forEach(id => {
-    const cd = State.chartData[id];
-    while (cd.sp.length > maxPts) { cd.sp.shift(); cd.pv.shift(); cd.out.shift(); cd.labels.shift(); }
-  });
-  if (State.selectedBlockId) rebuildChart(State.selectedBlockId);
-}
-
 function clearHistory() {
   Object.keys(State.chartData).forEach(id => {
-    State.chartData[id] = { sp:[], pv:[], out:[], labels:[] };
+    State.chartData[id] = { sp:[], pv:[], smoothPv:[], pvMin:[], pvMax:[], out:[], labels:[] };
     api('DELETE', `/api/blocks/${id}/history`).catch(()=>{});
   });
   if (State.chart) {
@@ -913,8 +1135,6 @@ function clearHistory() {
   toast('History cleared', 'info');
 }
 
-// ══════════════════════════════════════════════
-// Dashboard Analytics
 // ══════════════════════════════════════════════
 function updateAnalytics() {
   if (!State.selectedBlockId) return;
