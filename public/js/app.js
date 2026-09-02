@@ -781,15 +781,15 @@ function initChart() {
       labels: [],
       datasets: [
         // 0: Setpoint (SP) - Cyan Dashed Line (Top layer order:1 so it never gets hidden behind PV/Noise Band)
-        { label:'SP',     data:[], borderColor:'#00d4ff', borderDash:[6,3], borderWidth:2.2, pointRadius:0, tension:0.1, yAxisID:'y', order:1 },
+        { label:'SP',     data:[], borderColor:'#00d4ff', borderDash:[6,3], borderWidth:2.2, pointRadius:0, tension: 0, yAxisID:'y', order:1 },
         // 1: Process Value (PV) - Green Line
-        { label:'PV',     data:[], borderColor:'#22c55e', borderWidth:2,   pointRadius:0, tension:0.2, yAxisID:'y', order:2 },
+        { label:'PV',     data:[], borderColor:'#22c55e', borderWidth:2,   pointRadius:0, tension: 0, yAxisID:'y', order:2 },
         // 2: Noise Band Upper - Shading area (Background order:10)
-        { label:'PV Max', data:[], borderColor:'transparent', backgroundColor:'rgba(34,197,94,0.13)', fill:'+1', pointRadius:0, tension:0.2, yAxisID:'y', order:10 },
+        { label:'PV Max', data:[], borderColor:'transparent', backgroundColor:'rgba(34,197,94,0.13)', fill:'+1', pointRadius:0, tension: 0, yAxisID:'y', order:10 },
         // 3: Noise Band Lower
-        { label:'PV Min', data:[], borderColor:'transparent', backgroundColor:'transparent', pointRadius:0, tension:0.2, yAxisID:'y', order:10 },
+        { label:'PV Min', data:[], borderColor:'transparent', backgroundColor:'transparent', pointRadius:0, tension: 0, yAxisID:'y', order:10 },
         // 4: Controller Output - Orange Line
-        { label:'Output', data:[], borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, tension:0.2, yAxisID:'y2', order:3 },
+        { label:'Output', data:[], borderColor:'#f59e0b', borderWidth:1.5, pointRadius:0, tension: 0, yAxisID:'y2', order:3 },
       ],
     },
     options: {
@@ -896,7 +896,7 @@ function pushChartData(blockId, sp, pv, output, ts) {
   cd.out.push(validOut);
   cd.labels.push(label);
 
-  const maxPts = State.chartWindow * 30;
+  const maxPts = Math.min(600, State.chartWindow * 4); // Capped to 600 points max for smooth 60fps rendering on ARM
   while (cd.sp.length > maxPts) {
     cd.sp.shift();
     cd.pv.shift();
@@ -927,7 +927,7 @@ function pushChartData(blockId, sp, pv, output, ts) {
     
     // Smooth Canvas Throttle for Edge Devices (Max 5 canvas draws/sec)
     const now = Date.now();
-    const minInterval = State.lowPerfMode ? 1000 : 200; 
+    const minInterval = State.lowPerfMode ? 1000 : 250; 
     if (now - (State.lastChartUpdate || 0) >= minInterval) {
       State.chart.update('none'); // Draw frame without costly animation
       State.lastChartUpdate = now;
@@ -1834,7 +1834,7 @@ function dlExportPDF() {
                   borderWidth: 2.5,
                   borderDash: [8, 4],
                   pointRadius: 0,
-                  tension: 0.15,
+                  tension: 0,
                   fill: false,
                   yAxisID: 'yLeft'
                 },
@@ -1845,7 +1845,7 @@ function dlExportPDF() {
                   backgroundColor: 'transparent',
                   borderWidth: 3.0,
                   pointRadius: 0,
-                  tension: 0.15,
+                  tension: 0,
                   fill: false,
                   yAxisID: 'yLeft'
                 },
@@ -1856,7 +1856,7 @@ function dlExportPDF() {
                   backgroundColor: 'transparent',
                   borderWidth: 2.5,
                   pointRadius: 0,
-                  tension: 0.15,
+                  tension: 0,
                   fill: false,
                   yAxisID: 'yRight'
                 }
