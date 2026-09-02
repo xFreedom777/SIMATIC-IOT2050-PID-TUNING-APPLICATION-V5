@@ -1913,9 +1913,12 @@ function dlExportPDF() {
                 yLeft: {
                   type: 'linear',
                   position: 'left',
+                  min: -0.1,
+                  max: 200,
                   ticks: {
                     color: '#059669',
-                    font: { size: 12, weight: 'bold' }
+                    font: { size: 11, weight: 'bold' },
+                    stepSize: 10
                   },
                   grid: { color: 'rgba(0, 0, 0, 0.06)' },
                   border: { color: '#059669', width: 2 },
