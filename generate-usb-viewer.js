@@ -463,38 +463,46 @@ function generateHtmlViewer(backupFolder) {
       const plotW = W - padL - padR;
       const plotH = H - padT - padB;
 
-      // Min/Max for SP and PV
-      let minVal = Infinity, maxVal = -Infinity;
-      rows.forEach(r => {
-        if (r.sp < minVal) minVal = r.sp;
-        if (r.sp > maxVal) maxVal = r.sp;
-        if (r.pv < minVal) minVal = r.pv;
-        if (r.pv > maxVal) maxVal = r.pv;
-      });
-      if (minVal === maxVal) { minVal -= 5; maxVal += 5; }
-      const margin = (maxVal - minVal) * 0.1 || 1;
-      minVal -= margin; maxVal += margin;
+      // Standard Range for SP and PV (-0.1 to 200, step 10)
+      const minVal = -0.1;
+      const maxVal = 200;
 
       chartBounds = { padL, padR, padT, padB, plotW, plotH, minVal, maxVal, dpr };
 
-      // Grid Lines
+      // Grid Lines & Axis Ticks (Step 10)
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
       ctx.lineWidth = 1 * dpr;
 
-      for (let i = 0; i <= 5; i++) {
-        const y = padT + (plotH / 5) * i;
-        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-        const vLeft = (maxVal - ((maxVal - minVal) / 5) * i).toFixed(1);
-        ctx.fillStyle = '#10b981';
-        ctx.font = \`bold \${12 * dpr}px sans-serif\`;
-        ctx.textAlign = 'right';
-        ctx.fillText(vLeft, padL - 10 * dpr, y + 4 * dpr);
+      const numSteps = 20; // 0, 10, 20, 30 ... 200 (step 10)
+      for (let i = 0; i <= numSteps; i++) {
+        const vLeft = 200 - i * 10;
+        const y = padT + (plotH / (maxVal - minVal)) * (maxVal - vLeft);
 
-        const vRight = (100 - (100 / 5) * i).toFixed(0) + '%';
-        ctx.fillStyle = '#f59e0b';
-        ctx.textAlign = 'left';
-        ctx.fillText(vRight, W - padR + 10 * dpr, y + 4 * dpr);
+        ctx.beginPath(); 
+        ctx.moveTo(padL, y); 
+        ctx.lineTo(W - padR, y); 
+        ctx.stroke();
+
+        ctx.fillStyle = '#10b981';
+        ctx.font = \`bold \${11 * dpr}px sans-serif\`;
+        ctx.textAlign = 'right';
+        ctx.fillText(vLeft.toFixed(0), padL - 10 * dpr, y + 4 * dpr);
+
+        // Right axis Output (%)
+        if (i % 2 === 0) {
+          const vRight = (100 - (i / numSteps) * 100).toFixed(0) + '%';
+          ctx.fillStyle = '#f59e0b';
+          ctx.textAlign = 'left';
+          ctx.fillText(vRight, W - padR + 10 * dpr, y + 4 * dpr);
+        }
       }
+
+      // Bottom label -0.1
+      const yBottom = padT + plotH;
+      ctx.fillStyle = '#10b981';
+      ctx.font = \`bold \${10 * dpr}px sans-serif\`;
+      ctx.textAlign = 'right';
+      ctx.fillText('-0.1', padL - 10 * dpr, yBottom + 4 * dpr);
 
       // X Axis Time Labels
       ctx.fillStyle = '#94a3b8';
