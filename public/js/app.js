@@ -202,19 +202,23 @@ function onData(msg) {
 }
 
 function decodePIDError(errBits) {
-  if (!errBits) return null;
+  if (!errBits || Number(errBits) === 0) return [];
+  const num = Number(errBits);
   const errors = [];
-  if (errBits & 0x0001) errors.push('PV out of limits');
-  if (errBits & 0x0002) errors.push('Input_PER out of limits');
-  if (errBits & 0x0004) errors.push('Wire break');
-  if (errBits & 0x0008) errors.push('Error during tuning');
-  if (errBits & 0x0010) errors.push('Invalid parameters (Gain, Ti, Td)');
-  if (errBits & 0x0020) errors.push('Invalid Setpoint / ManualValue');
-  if (errBits & 0x0040) errors.push('Invalid output limits');
-  if (errBits & 0x0080) errors.push('Sampling time error');
-  if (errBits & 0x10000) errors.push('Pre-tuning failed');
-  if (errBits & 0x20000) errors.push('Fine tuning failed');
-  if (errors.length === 0) errors.push(`Unknown Error (16#${errBits.toString(16)})`);
+  if (num & 0x0001) errors.push('PV out of limits (16#0001)');
+  if (num & 0x0002) errors.push('Input_PER out of limits (16#0002)');
+  if (num & 0x0004) errors.push('Wire break / Sensor Fault (16#0004)');
+  if (num & 0x0008) errors.push('Error during tuning (16#0008)');
+  if (num & 0x0010) errors.push('Invalid parameters: Gain/Ti/Td (16#0010)');
+  if (num & 0x0020) errors.push('Invalid Setpoint / ManualValue (16#0020)');
+  if (num & 0x0040) errors.push('Invalid output limits (16#0040)');
+  if (num & 0x0080) errors.push('Sampling time error (16#0080)');
+  if (num & 0x0100) errors.push('Setpoint limit error (16#0100)');
+  if (num & 0x0200) errors.push('Manual value error (16#0200)');
+  if (num & 0x0400) errors.push('Disturbance error (16#0400)');
+  if (num & 0x10000) errors.push('Pre-tuning failed (16#10000)');
+  if (num & 0x20000) errors.push('Fine tuning failed (16#20000)');
+  if (errors.length === 0) errors.push(`PID Fault (16#${num.toString(16).toUpperCase()})`);
   return errors;
 }
 
@@ -567,12 +571,30 @@ function updateLiveDisplay(sp, pv, output, mode, state, errorBits) {
   document.getElementById('manualOutSection').style.display = (mode === 4) ? 'block' : 'none';
 
   const stateNames = { 0:'Inactive', 1:'Pre-tuning', 2:'Fine tuning', 3:'Auto', 4:'Manual', 5:'Hold' };
-  document.getElementById('stateLabel').textContent = `State: ${stateNames[state] || state}`;
+  const isStateFault = (state !== undefined && (state < 0 || state > 5));
+  const stateEl = document.getElementById('stateLabel');
+  if (stateEl) {
+    if (isStateFault) {
+      stateEl.textContent = `State: Fault (${state})`;
+      stateEl.style.color = '#f87171';
+      stateEl.style.fontWeight = '600';
+    } else {
+      stateEl.textContent = `State: ${stateNames[state] || state}`;
+      stateEl.style.color = 'var(--text-muted)';
+      stateEl.style.fontWeight = 'normal';
+    }
+  }
 
-  const hasError = state < 0 || state > 5 || errorBits > 0;
-  document.getElementById('resetErrBtn').style.display = hasError ? 'inline-flex' : 'none';
+  const hasError = isStateFault || (errorBits && Number(errorBits) > 0);
+  const resetBtn = document.getElementById('resetErrBtn');
+  if (resetBtn) resetBtn.style.display = hasError ? 'inline-flex' : 'none';
 
-  const errList = decodePIDError(errorBits);
+  // Decode errors from both ErrorBits and State Fault
+  let errList = decodePIDError(errorBits) || [];
+  if (isStateFault && errList.length === 0) {
+    errList.push(`Abnormal State / PID Fault (State Code: ${state}) — Click "Reset Error" to clear`);
+  }
+
   let alarmBanner = document.getElementById('alarmBanner');
   if (!alarmBanner) {
     alarmBanner = document.createElement('div');
@@ -581,7 +603,7 @@ function updateLiveDisplay(sp, pv, output, mode, state, errorBits) {
     const liveRow = document.querySelector('.live-row');
     if (liveRow) liveRow.parentNode.insertBefore(alarmBanner, liveRow);
   }
-  if (errList && errList.length > 0) {
+  if (errList.length > 0) {
     alarmBanner.style.display = 'block';
     alarmBanner.innerHTML = `⚠️ <b>PID ALARM:</b> ${errList.join(' | ')}`;
   } else {
